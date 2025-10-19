@@ -137,18 +137,20 @@ builder.Services.AddDbContext<AcebookDbContext>(options =>
 var app = builder.Build();
 
 // ---- Proxy & HTTPS pipeline ----
-// Forwarded headers (safe to always enable; often gated to non-Dev)
-if (!app.Environment.IsDevelopment())
+// Enable forwarded headers so Render’s proxy can pass the original scheme/IP
+var fwd = new ForwardedHeadersOptions
 {
-    app.UseForwardedHeaders(new ForwardedHeadersOptions
-    {
-        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
-    });
-}
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+};
+// Trust all proxies/networks (Render’s proxy IPs are dynamic)
+fwd.KnownNetworks.Clear();
+fwd.KnownProxies.Clear();
+app.UseForwardedHeaders(fwd);
 
+// Disable HTTPS redirection inside the container.
+// Render already terminates HTTPS at its load balancer.
 if (!app.Environment.IsDevelopment())
 {
-    app.UseHttpsRedirection();     // Use Render’s TLS termination + redirect
     app.UseExceptionHandler("/Home/Error");
     app.UseHsts();
 }
