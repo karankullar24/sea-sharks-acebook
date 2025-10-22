@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using CloudinaryDotNet;
 
 //
 //  Program.cs
@@ -133,6 +134,14 @@ builder.Services.AddDbContext<AcebookDbContext>(options =>
             npg.EnableRetryOnFailure();
     });
 });
+
+var cloudName = Environment.GetEnvironmentVariable("CLOUDINARY_CLOUD_NAME");
+var apiKey = Environment.GetEnvironmentVariable("CLOUDINARY_API_KEY");
+var apiSecret = Environment.GetEnvironmentVariable("CLOUDINARY_API_SECRET");
+
+var account = new Account(cloudName, apiKey, apiSecret);
+var cloudinary = new Cloudinary(account) { Api = { Secure = true } };
+builder.Services.AddSingleton(cloudinary);
 
 var app = builder.Build();
 
