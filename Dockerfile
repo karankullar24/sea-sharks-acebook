@@ -8,6 +8,8 @@ COPY Acebook/*.csproj Acebook/
 
 RUN dotnet restore Acebook/acebook.csproj
 
+RUN dotnet add package CloudinaryDotNet
+
 # now copy the rest
 COPY . .
 
