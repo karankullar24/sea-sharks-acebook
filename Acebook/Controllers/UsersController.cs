@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
 using CloudinaryDotNet;
+using CloudinaryDotNet.Actions;
 
 namespace acebook.Controllers;
 
