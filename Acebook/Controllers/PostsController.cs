@@ -6,6 +6,8 @@ using acebook.ActionFilters;
 using Microsoft.EntityFrameworkCore;
 using acebook.Hubs;
 using Microsoft.AspNetCore.SignalR;
+using CloudinaryDotNet;
+using CloudinaryDotNet.Actions;
 
 namespace acebook.Controllers;
 
@@ -15,12 +17,15 @@ public class PostsController : Controller
   private readonly ILogger<PostsController> _logger;
   private readonly IHubContext<NotificationHub> _hub;
   private readonly AcebookDbContext _db;
+  private readonly Cloudinary _cloudinary;
+  
 
-  public PostsController(ILogger<PostsController> logger, IHubContext<NotificationHub> hub, AcebookDbContext db)
+  public PostsController(ILogger<PostsController> logger, IHubContext<NotificationHub> hub, AcebookDbContext db, Cloudinary cloudinary)
   {
     _logger = logger;
     _hub = hub;
     _db = db;
+    _cloudinary = cloudinary;
   }
 
   [Route("/posts")]
@@ -83,67 +88,93 @@ public class PostsController : Controller
   [HttpPost]
   [ValidateAntiForgeryToken]
   public async Task<IActionResult> Create(Post post, string returnUrl, IFormFile? postPicture, int? WallId = null)
-  {
+{
     int currentUserId = HttpContext.Session.GetInt32("user_id").Value;
 
-    post.UserId = currentUserId;
+    post.UserId   = currentUserId;
     post.CreatedOn = DateTime.UtcNow;
+    post.WallId   = WallId ?? currentUserId;
 
-    // If WallId is null, default it to the current user’s wall
-    post.WallId = WallId ?? currentUserId;
-
-    if (postPicture != null)
+    if (postPicture is { Length: > 0 })
     {
-      var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot/images/post_pics");
-      var fileName = Guid.NewGuid().ToString() + Path.GetExtension(postPicture.FileName);
-      var filePath = Path.Combine(uploadsFolder, fileName);
+        // Optional: basic content-type guard
+        var okTypes = new[] { "image/jpeg", "image/png", "image/webp", "image/gif" };
+        if (!okTypes.Contains(postPicture.ContentType))
+        {
+            TempData["UploadError"] = "Unsupported image type.";
+            // fall through and post without an image
+        }
+        else
+        {
+            // Upload to Cloudinary
+            await using var stream = postPicture.OpenReadStream();
+            var uploadParams = new ImageUploadParams
+            {
+                File = new FileDescription(postPicture.FileName, stream),
+                Folder = "acebook/post_pics",   // optional folder structure
+                UseFilename = false,
+                UniqueFilename = true,
+                Overwrite = false
+                // You could add eager transforms if you want thumbnails generated
+            };
 
-      using (var stream = new FileStream(filePath, FileMode.Create))
-      {
-        await postPicture.CopyToAsync(stream);
-      }
-      post.PostPicturePath = $"/images/post_pics/{fileName}";
+            try
+            {
+                var result = await _cloudinary.UploadAsync(uploadParams);
+                if (result.SecureUrl != null)
+                {
+                    // Store full CDN URL (works with your existing <img src="@imagePath">)
+                    post.PostPicturePath = result.SecureUrl.ToString();
+                }
+                else
+                {
+                    TempData["UploadError"] = "Image upload failed. Posting without image.";
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Cloudinary upload error: {ex.Message}");
+                TempData["UploadError"] = "Image upload failed. Posting without image.";
+            }
+        }
     }
+
     _db.Posts.Add(post);
     await _db.SaveChangesAsync();
 
-    // logic for the notifications is here
+    // --- notifications (unchanged) ---
     if (post.WallId != post.UserId)
     {
-      var poster = await _db.Users.FindAsync(currentUserId);
-      var wallOwner = await _db.Users.FindAsync(post.WallId);
+        var poster    = await _db.Users.FindAsync(currentUserId);
+        var wallOwner = await _db.Users.FindAsync(post.WallId);
 
-      if (poster != null && wallOwner != null)
-      {
-        string title = "New Post on Your Wall";
-        string message = $"{poster.FirstName} posted on your wall.";
-        string url = $"/posts/{post.Id}";
-
-        _db.Notifications.Add(new Notification
+        if (poster != null && wallOwner != null)
         {
-          ReceiverId = wallOwner.Id,
-          SenderId = currentUserId,
-          Title = title,
-          Message = message,
-          Url = url
-        });
+            string title = "New Post on Your Wall";
+            string message = $"{poster.FirstName} posted on your wall.";
+            string url = $"/posts/{post.Id}";
 
-        await _db.SaveChangesAsync();
+            _db.Notifications.Add(new Notification
+            {
+                ReceiverId = wallOwner.Id,
+                SenderId = currentUserId,
+                Title = title,
+                Message = message,
+                Url = url
+            });
 
-        // Send live SignalR notification
-        await _hub.Clients.Group($"user-{wallOwner.Id}")
-            .SendAsync("ReceiveNotification", title, message, url);
-      }
+            await _db.SaveChangesAsync();
+
+            await _hub.Clients.Group($"user-{wallOwner.Id}")
+                .SendAsync("ReceiveNotification", title, message, url);
+        }
     }
 
-
-    // Redirect to where the form came from
     if (!string.IsNullOrWhiteSpace(returnUrl) && Url.IsLocalUrl(returnUrl))
-      return Redirect(returnUrl);
-      
-    return RedirectToAction("Index", "Posts");
-  }
+        return Redirect(returnUrl);
 
+    return RedirectToAction("Index", "Posts");
+}
   // READ a Post (individual post)
   [Route("/posts/{id}")]
   [HttpGet]

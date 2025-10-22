@@ -6,6 +6,7 @@ using acebook.ActionFilters;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
+using CloudinaryDotNet;
 
 namespace acebook.Controllers;
 
@@ -14,12 +15,14 @@ public class UsersController : Controller
     private readonly ILogger<UsersController> _logger;
     private readonly IPasswordHasher<User> _hasher;
     private readonly AcebookDbContext _db;
+    private readonly Cloudinary _cloudinary;
 
-    public UsersController(ILogger<UsersController> logger, IPasswordHasher<User> hasher, AcebookDbContext db)
+    public UsersController(ILogger<UsersController> logger, IPasswordHasher<User> hasher, AcebookDbContext db, Cloudinary cloudinary)
     {
         _logger = logger;
         _hasher = hasher;
         _db = db;
+        _cloudinary = cloudinary;
     }
 
     [Route("/signup")]
@@ -323,34 +326,62 @@ public class UsersController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> UploadProfilePicture(IFormFile profilePicture)
     {
-        var currentUserId = HttpContext.Session.GetInt32("user_id");
-        if (currentUserId is null) return RedirectToAction("New", "Sessions");
+var currentUserId = HttpContext.Session.GetInt32("user_id");
+    if (currentUserId is null) return RedirectToAction("New", "Sessions");
 
-        if (profilePicture == null || profilePicture.Length == 0)
+    if (profilePicture == null || profilePicture.Length == 0)
+    {
+        TempData["UploadError"] = "Please choose an image to upload.";
+        return Redirect($"/users/{currentUserId}");
+    }
+
+    // ✅ Optional file type validation
+    var okTypes = new[] { "image/jpeg", "image/png", "image/webp", "image/gif" };
+    if (!okTypes.Contains(profilePicture.ContentType))
+    {
+        TempData["UploadError"] = "Unsupported file type.";
+        return Redirect($"/users/{currentUserId}");
+    }
+
+    // ✅ Upload to Cloudinary (the singleton was registered in Program.cs)
+    try
+    {
+        await using var stream = profilePicture.OpenReadStream();
+
+        var uploadParams = new ImageUploadParams
         {
-            TempData["UploadError"] = "Please choose an image to upload.";
+            File = new FileDescription(profilePicture.FileName, stream),
+            Folder = "acebook/profile_pics", // your Cloudinary folder (optional)
+            UseFilename = false,
+            UniqueFilename = true,
+            Overwrite = false
+        };
+
+        var uploadResult = await _cloudinary.UploadAsync(uploadParams);
+
+        if (uploadResult.StatusCode != System.Net.HttpStatusCode.OK || uploadResult.SecureUrl == null)
+        {
+            TempData["UploadError"] = "Image upload failed. Please try again.";
             return Redirect($"/users/{currentUserId}");
         }
 
-        var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "images", "profile_pics");
-        Directory.CreateDirectory(uploadsFolder); // ensures folder exists
-
-        var fileName = Guid.NewGuid() + Path.GetExtension(profilePicture.FileName);
-        var filePath = Path.Combine(uploadsFolder, fileName);
-
-        await using (var stream = new FileStream(filePath, FileMode.Create))
-        {
-            await profilePicture.CopyToAsync(stream);
-        }
-
+        // ✅ Update DB and session
         var user = await _db.Users.FindAsync(currentUserId);
         if (user == null) return NotFound();
 
-        user.ProfilePicturePath = $"/images/profile_pics/{fileName}";
+        user.ProfilePicturePath = uploadResult.SecureUrl.ToString(); // full HTTPS URL
         HttpContext.Session.SetString("user_profile_picture", user.ProfilePicturePath ?? "");
         await _db.SaveChangesAsync();
 
+        TempData["SuccessMessage"] = "Profile picture updated successfully!";
         return Redirect($"/users/{currentUserId}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"❌ Cloudinary upload error: {ex.Message}");
+        TempData["UploadError"] = "Upload failed due to a server error.";
+        return Redirect($"/users/{currentUserId}");
+    }
     }
 
 
